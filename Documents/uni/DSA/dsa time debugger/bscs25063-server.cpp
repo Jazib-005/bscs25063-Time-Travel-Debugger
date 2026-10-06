@@ -184,21 +184,141 @@ public:
 
 
 // PASS 0x0: READING source.bin + VALIDITY CHECK
-bool readSourceLine(ifstream &in, string &out)
+bool readSourceLine(ifstream& in, string& out)
 {
     // reads the next nonblank line
+
+    string temp = "";
+
+    while (getline(in, temp)) {
+
+        bool isBlank = true;
+
+        for (int i = 0; i < temp.length(); i++) {
+
+            if (temp[i] != '\t' and temp[i] != ' ' and temp[i] != '\r') {
+                isBlank = false;
+                break;
+            }
+
+        }
+        if (isBlank) {
+            continue;
+        }
+
+        out = temp;
+        return true;
+
+    }
+    return false;
+
+
 }
-string firstWord(const string &line)
+string firstWord(const string& line)
 {
     // returns first word from the input string
+
+    string temp = "";
+
+    int len = line.length();
+    int i = 0;
+
+    while (i < len and (line[i] == ' ' || line[i] == '\t' || line[i] == '\r')) {
+        i++;
+    }
+
+    for (; i < len; i++) {
+        if (line[i] == ' ' || line[i] == '\t' || line[i] == '\r') {
+            break;
+
+        }
+        temp += line[i];
+    }
+    return temp;
+
 }
-string secondWord(const string &line)
+string secondWord(const string& line)
 {
     // returns the second word
+
+    int i = 0;
+    string temp = "";
+
+    while (i < line.length() && (line[i] == ' ' || line[i] == '\t' || line[i] == '\r')) {
+        i++;
+    }
+
+    while (i < line.length() && line[i] != ' ' && line[i] != '\t' && line[i] != '\r') {
+
+        i++;
+    }
+
+    while (i < line.length() && (line[i] == ' ' || line[i] == '\t' || line[i] == '\r')) {
+
+        i++;
+    }
+
+
+
+    for (; i < line.length(); i++) {
+        if (line[i] == ' ') {
+            break;
+
+        }
+        temp += line[i];
+    }
+    return temp;
+
+
 }
-bool validateProgram(const char *sourcePath)
+bool validateProgram(const char* sourcePath)
 {
     // for each func defined there should be exactly one func_end and no nested funcs allowed - 
+    ifstream fin(sourcePath);
+    if (!fin) {
+        return false;
+    }
+
+    Stack<string> st;
+    string temp = "";
+    bool isValid = false;
+
+    while (readSourceLine(fin, temp)) {
+        string t = firstWord(temp);
+        if (t == "func") {
+            if (st.depth() == 0) {
+                st.push(t);
+            }
+            else {
+                fin.close();
+                return false;
+            }
+        }
+        else if (t == "func_end") {
+            if (st.depth() == 0) {
+                fin.close();
+                return false;
+            }
+            else {
+                st.pop();
+                isValid = true;
+            }
+        }
+        else {
+            if (st.depth() == 0) {
+                fin.close();
+                return false;
+            }
+        }
+
+    }
+    if (st.depth() != 0) {
+        fin.close();
+        return false;
+    }
+    fin.close();
+    return isValid;
+
 }
 
 // PASS 0x1: RESOLVE() -> resolve.bin
