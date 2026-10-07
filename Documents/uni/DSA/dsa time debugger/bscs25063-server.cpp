@@ -322,16 +322,39 @@ bool validateProgram(const char* sourcePath)
 }
 
 // PASS 0x1: RESOLVE() -> resolve.bin
-int64_t writeResolveRecord(FILE *f, int64_t offsetField, const string &text)
+int64_t writeResolveRecord(FILE* f, int64_t offsetField, const string& text)
 {
     // writes one [offset(8B)][size(4B)][string] record at the current file position
     // returns this record's own starting byte position
+
+    fwrite(&offsetField, sizeof(offsetField), 1, f); // memory of raw data , size of the data , how many are we writing, where we are writing
+    int32_t s = text.length(); // means 4 byte variable , incase i forget
+    fwrite(&s, sizeof(s), 1, f); // same as 1 
+    fwrite(text.c_str(), s, 1, f); // c_str convert the string into c style string discarding stuff like size etc
+
+
+    return offsetField;
+
+
 }
-int64_t readResolveRecord(FILE *f, string &outText)
+int64_t readResolveRecord(FILE* f, string& outText)
 {
     // reads one record at the current position and advances past it, returns the offset field - the raw line text comes back untouched in outText.
+
+    int64_t offSet = 0;
+    fread(&offSet, sizeof(offSet), 1, f);
+
+    int32_t length;
+    fread(&length, sizeof(length), 1, f);
+    outText.resize(length);
+    fread(&outText[0], 1, length, f); // telling fread to  dump the raw data at which index/position
+    // same as we do write and read in offstream and ifstream file
+
+    return offSet + sizeof(int64_t) + sizeof(int32_t) + length;
+
+
 }
-int64_t resolveProgram(const char *sourcePath, const char *resolveBinPath)
+int64_t resolveProgram(const char* sourcePath, const char* resolveBinPath)
 {
     FuncEntry funcArray[MAX_FUNCS];
     int32_t funcCount = 0;
@@ -344,7 +367,81 @@ int64_t resolveProgram(const char *sourcePath, const char *resolveBinPath)
     // Once the whole file is written, every CALL's offset field is patched
     // with its target's position. Patching happens after the full write
     // Returns the byte offset of main's FUNC header record.
-    // if there is no main return the error 
+    // if there is no main return the error
+    ifstream fin(sourcePath);
+    if (!fin) {
+        cout << "Error: File Not Found" << endl;
+        return -1;
+    }
+
+    FILE* file = fopen(resolveBinPath, "wb+");
+    if (!file) {
+        cout << "Error: File Not Found" << endl;
+        return -1;
+    }
+    int64_t curr_offSet = 0;
+    string temp = "";
+    while (readSourceLine(fin, temp)) {
+        int64_t totalBytes = writeResolveRecord(file, curr_offSet, temp);
+        string first_word = firstWord(temp);
+
+        if (first_word == "func") {
+            if (funcCount >= MAX_FUNCS) {
+                throw runtime_error("Error: Maximum FUnction Limit reached");
+
+            }
+            funcArray[funcCount].byteOffsetInResolveBin = curr_offSet;
+            funcArray[funcCount].funcName = secondWord(temp);
+            funcCount++;
+        }
+
+        else if (first_word == "call") {
+            if (patchCount >= MAX_PATCHES) {
+                throw runtime_error("Error: MAximum Patch Limit Reached");
+            }
+
+
+            string t = secondWord(temp);
+
+            patches[patchCount].byteOffsetOfOffsetField = curr_offSet;
+            patches[patchCount].targetFuncName = t;
+            patchCount++;
+
+        }
+
+        curr_offSet = curr_offSet + 8 + 4 + temp.length();
+
+    }
+    fin.close();
+
+    for (int i = 0; i < patchCount; i++) {
+        bool isFound = false;
+        for (int j = 0; j < funcCount; j++) {
+
+            if (patches[i].targetFuncName == funcArray[j].funcName) {
+                isFound = true;
+
+                fseek(file, patches[i].byteOffsetOfOffsetField, 0);
+                fwrite(&funcArray[j].byteOffsetInResolveBin, sizeof(int64_t), 1, file);
+                break;
+            }
+        }
+        if (!isFound) {
+            fclose(file);
+            return -1;
+        }
+    }
+
+
+    for (int i = 0; i < funcCount; i++) {
+        if (funcArray[i].funcName == "main") {
+            fclose(file);
+            return funcArray[i].byteOffsetInResolveBin;
+        }
+    }
+    fclose(file);
+    return -1;
+
 }
 
 // PASS 0x2: EXECUTION (tokenization happens here)
