@@ -12,8 +12,8 @@
 #include <string>
 #include <cstdint>
 #include <fstream>
-#include <unistd.h>
-#include <sys/socket.h>
+//#include <unistd.h>
+//#include <sys/socket.h>
 #include <cstdint>
 #include <cstdio>
 using namespace std;
@@ -456,16 +456,86 @@ struct Token
     TokenType type;
     string text;
 };
-int32_t tokenizeLine(const string &line, Token tokens[], int32_t maxTokens)
+int32_t tokenizeLine(const string& line, Token tokens[], int32_t maxTokens)
 {
     // first word is always a instruction keyword
     // instruction set = [func, func_end, call, set, add, sub, mul and div]
     // next word is identifier like name of a function, variable name
     // after identifier all are the params/arg, space separated
+
+    int32_t totalToken = 0;
+    int32_t len = line.length();
+    int32_t char_index = 0;
+    string temp = "";
+    while (char_index < len) {
+
+        if (line[char_index] != ' ' and line[char_index] != '\t' and line[char_index] != '\r') {
+            temp += line[char_index];
+
+
+        }
+
+        else if (line[char_index] == ' ' or line[char_index] == '\t' or line[char_index] == '\r') {
+            if (!temp.empty()) {
+
+
+
+                if (totalToken >= maxTokens) {
+                    throw runtime_error("Error: Token Limit Exceeded");
+                }
+                if (totalToken == 0) {
+                    tokens[totalToken].type = KEYWORD;
+                    tokens[totalToken].text = temp;
+                    totalToken++;
+                }
+                else if (totalToken == 1) {
+                    tokens[totalToken].type = IDENTIFIER;
+                    tokens[totalToken].text = temp;
+                    totalToken++;
+                }
+                else {
+                    tokens[totalToken].type = PARAM;
+                    tokens[totalToken].text = temp;
+                    totalToken++;
+                }
+                temp.clear();
+            }
+        }
+        char_index++;
+
+    }
+    if (!temp.empty()) {
+        if (totalToken >= maxTokens) {
+            throw runtime_error("Error: Token Capacity Exceeded");
+        }
+        if (totalToken == 0) {
+            tokens[totalToken].type = KEYWORD;
+            tokens[totalToken].text = temp;
+            totalToken++;
+        }
+        else if (totalToken == 1) {
+            tokens[totalToken].type = IDENTIFIER;
+            tokens[totalToken].text = temp;
+            totalToken++;
+        }
+        else {
+            tokens[totalToken].type = PARAM;
+            tokens[totalToken].text = temp;
+            totalToken++;
+        }
+    }
+
+    return totalToken;
 }
-Snapshot *buildSnapshot(Stack<Frame> &callStack)
+Snapshot* buildSnapshot(Stack<Frame>& callStack)
+
 {
     // build the snapshot based on the callStack given
+    Snapshot* ss = new Snapshot();
+    int32_t depth = callStack.snapshot_into(ss->callStack, MAX_STACK_DEPTH);
+    ss->stackDepth = depth;
+    return ss;
+
 }
 void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &timeline)
 {
