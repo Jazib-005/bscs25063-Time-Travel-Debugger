@@ -867,13 +867,101 @@ void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& ti
 }
 
 // PASS 0x3: SERIALIZE TIMELINE
-void writeTdbg(Timeline &timeline, const char *tdbgPath)
+void writeTdbg(Timeline& timeline, const char* tdbgPath)
 {
     // placeholder for header
     // index array of the size of stepcount from the timeline
     // placing each snapshot in the file while maintaining the index(starting point of each nth snapshot)
     // after timeline add the index array i the file
     // update the header
+    int32_t step_count = timeline.getStepCount();
+
+    if (step_count <= 0) {
+        throw runtime_error("Error: Its EMpty.....");
+    }
+
+    FILE* f = fopen(tdbgPath, "wb+");
+
+    if (!f) {
+        throw runtime_error("Error: Wasnot to able to create:  " + string(tdbgPath));
+    }
+
+    TTDBHeader header;
+    header.magic[0] = 'T';
+    header.magic[1] = 'T';
+    header.magic[2] = 'D';
+    header.magic[3] = 'B';
+    header.version = 1;
+    header.stepCount = step_count;
+    header.indexOffset = 0;
+    writeHeader(f, header);
+
+    int64_t* index_arr = new int64_t[step_count];
+    int32_t step = 0;
+
+    for (TimelineNode* curr_node = timeline.begin(); curr_node != nullptr and step < step_count; curr_node = curr_node->next) {
+
+        index_arr[step] = ftell(f);
+
+        Snapshot* ss = curr_node->data;
+
+        fwrite(&ss->stackDepth, sizeof(int32_t), 1, f);
+
+        for (int32_t d = 0; d < ss->stackDepth; d++) {
+
+            Frame& currentFrame = ss->callStack[d];
+
+            int32_t len = currentFrame.func_name.length();
+
+            fwrite(&len, sizeof(int32_t), 1, f);
+
+            fwrite(currentFrame.func_name.c_str(), sizeof(char), len, f);
+
+            fwrite(&currentFrame.returnLine, sizeof(int32_t), 1, f);
+
+            fwrite(&currentFrame.argc, sizeof(int32_t), 1, f);
+            for (int32_t a = 0; a < currentFrame.argc; a++) {
+                len = currentFrame.argv[a].name.length();
+
+
+                fwrite(&len, sizeof(int32_t), 1, f);
+                fwrite(currentFrame.argv[a].name.c_str(), sizeof(char), len, f);
+
+
+                fwrite(&currentFrame.argv[a].value, sizeof(int32_t), 1, f);
+            }
+
+            fwrite(&currentFrame.localCount, sizeof(int32_t), 1, f);
+            for (int32_t l = 0; l < currentFrame.localCount; l++) {
+
+
+                len = currentFrame.locals[l].name.length();
+                fwrite(&len, sizeof(int32_t), 1, f);
+                fwrite(currentFrame.locals[l].name.c_str(), sizeof(char), len, f);
+
+
+
+                fwrite(&currentFrame.locals[l].value, sizeof(int32_t), 1, f);
+            }
+        }
+
+        step++;
+    }
+
+
+    header.indexOffset = ftell(f);
+
+
+    fwrite(index_arr, sizeof(int64_t), step, f);
+
+    fseek(f, 0, SEEK_SET);
+
+
+    writeHeader(f, header);
+
+    fclose(f);
+    delete[] index_arr;
+
 }
 // main section
 int32_t main()
