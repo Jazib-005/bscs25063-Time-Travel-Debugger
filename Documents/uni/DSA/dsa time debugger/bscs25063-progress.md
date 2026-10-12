@@ -8,3 +8,4 @@ Next target is to implement pass 0x1
 Implemented Pass 0x1
 Next Taget is to implemnt Pass Ox2
 Implemented Pass 0x2 tokenizeline and buildSnapshot functions
+Implented Pass 0x2 Execute Program

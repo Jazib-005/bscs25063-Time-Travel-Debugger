@@ -537,7 +537,7 @@ Snapshot* buildSnapshot(Stack<Frame>& callStack)
     return ss;
 
 }
-void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &timeline)
+void executeProgram(const char* resolveBinPath, int64_t mainOffset, Timeline& timeline)
 {
     // initialize the call stack
     // make the main frame
@@ -545,6 +545,325 @@ void executeProgram(const char *resolveBinPath, int64_t mainOffset, Timeline &ti
 
     // implementation:
     // execute line by line, and according to the keyword perform action
+
+    FILE* f = fopen("resolve.bin", "rb");
+
+    if (!f) {
+        throw runtime_error("Error: File not found");
+    }
+
+    Stack<Frame> call_stack;
+
+
+    Frame mainFrame;
+
+    mainFrame.func_name = "main";
+    mainFrame.argc = 0;
+
+    mainFrame.returnLine = -1;
+
+    mainFrame.localCount = 0;
+
+    call_stack.push(mainFrame);
+
+    fseek(f, mainOffset, SEEK_SET);
+
+    while (!call_stack.isEmpty()) {
+
+        Token tokens[MAX_TOKENS];
+        string line = "";
+        int64_t curr_pos = readResolveRecord(f, line);
+
+        if (line.empty()) {
+
+            break;
+        }
+
+        int32_t token_count = tokenizeLine(line, tokens, MAX_TOKENS);
+
+        if (token_count == 0) {
+            continue;
+        }
+
+
+        string instructions = tokens[0].text;
+        Frame& currentFrame = call_stack.peek();
+
+        if (instructions == "set") {
+
+            string var_name = tokens[1].text;
+
+            string val_str = tokens[2].text;
+            int32_t val = 0;
+            bool isVar = false;
+
+            for (int i = 0; i < currentFrame.argc; i++) {
+
+                if (currentFrame.argv[i].name == val_str) {
+                    val = currentFrame.argv[i].value;
+                    isVar = true;
+                    break;
+
+                }
+            }
+
+            if (!isVar) {
+
+                for (int i = 0; i < currentFrame.localCount; i++) {
+                    if (currentFrame.locals[i].name == val_str) {
+                        val = currentFrame.locals[i].value;
+
+                        isVar = true;
+                        break;
+                    }
+                }
+
+            }
+
+            if (!isVar) {
+
+                val = stoi(val_str);
+            }
+
+            bool isFound = false;
+
+
+
+            for (int i = 0; i < currentFrame.argc; i++) {
+                if (currentFrame.argv[i].name == var_name) {
+                    currentFrame.argv[i].value = val;
+
+                    isFound = true;
+
+                    break;
+
+                }
+
+            }
+
+            if (!isFound) {
+                for (int i = 0; i < currentFrame.localCount; i++) {
+                    if (currentFrame.locals[i].name == var_name) {
+
+                        currentFrame.locals[i].value = val;
+                        isFound = true;
+
+                        break;
+                    }
+                }
+            }
+
+
+            if (!isFound and currentFrame.localCount < MAX_VARS_PER_FRAME) {
+
+                currentFrame.locals[currentFrame.localCount].name = var_name;
+
+                currentFrame.locals[currentFrame.localCount].value = val;
+                currentFrame.localCount++;
+            }
+
+        }
+        else if (instructions == "add" or instructions == "sub" or instructions == "mul" or instructions == "div") {
+
+            string var = tokens[1].text;
+
+            string val_str = tokens[2].text;
+
+            int32_t dest_val = 0;
+            int32_t src_val = 0;
+            bool isVar = false;
+
+
+            for (int i = 0; i < currentFrame.argc; i++) {
+                if (currentFrame.argv[i].name == val_str) {
+
+                    src_val = currentFrame.argv[i].value;
+                    isVar = true;
+                    break;
+                }
+            }
+
+            if (!isVar) {
+                for (int i = 0; i < currentFrame.localCount; i++) {
+
+                    if (currentFrame.locals[i].name == val_str) {
+                        src_val = currentFrame.locals[i].value;
+
+                        isVar = true;
+                        break;
+                    }
+                }
+
+            }
+            if (!isVar) {
+
+                src_val = stoi(val_str);
+            }
+
+            for (int i = 0; i < currentFrame.argc; i++) {
+
+                if (currentFrame.argv[i].name == var) {
+
+                    dest_val = currentFrame.argv[i].value;
+                    break;
+                }
+            }
+            for (int i = 0; i < currentFrame.localCount; i++) {
+                if (currentFrame.locals[i].name == var) {
+
+                    dest_val = currentFrame.locals[i].value;
+                    break;
+                }
+            }
+
+            int32_t res = 0;
+
+            if (instructions == "add") {
+
+                res = dest_val + src_val;
+            }
+            else if (instructions == "sub") {
+
+                res = dest_val - src_val;
+            }
+            else if (instructions == "mul") {
+                res = dest_val * src_val;
+            }
+            else if (instructions == "div" and src_val != 0) {
+
+                res = dest_val / src_val;
+            }
+
+
+            bool isFound = false;
+
+            for (int i = 0; i < currentFrame.argc; i++) {
+                if (currentFrame.argv[i].name == var) {
+                    currentFrame.argv[i].value = res;
+
+                    isFound = true;
+                    break;
+                }
+            }
+            if (!isFound) {
+                for (int i = 0; i < currentFrame.localCount; i++) {
+                    if (currentFrame.locals[i].name == var) {
+                        currentFrame.locals[i].value = res;
+                        isFound = true;
+                        break;
+                    }
+                }
+            }
+            if (!isFound and currentFrame.localCount < MAX_VARS_PER_FRAME) {
+
+                currentFrame.locals[currentFrame.localCount].name = var;
+
+                currentFrame.locals[currentFrame.localCount].value = res;
+                currentFrame.localCount++;
+            }
+        }
+        else if (instructions == "call") {
+            string funcName = tokens[1].text;
+            int64_t pos = ftell(f);
+
+            Frame new_frame;
+            new_frame.func_name = funcName;
+
+            new_frame.localCount = 0;
+            new_frame.argc = 0;
+
+            new_frame.returnLine = pos;
+
+            for (int i = 2; i < token_count and new_frame.argc < MAX_VARS_PER_FRAME; i++) {
+
+                string argName = tokens[i].text;
+                new_frame.argv[new_frame.argc].name = argName;
+
+                bool isVar = false;
+
+                for (int j = 0; j < currentFrame.argc; j++) {
+
+                    if (currentFrame.argv[j].name == argName) {
+
+                        new_frame.argv[new_frame.argc].value = currentFrame.argv[j].value;
+                        isVar = true;
+                        break;
+                    }
+                }
+                if (!isVar) {
+                    for (int j = 0; j < currentFrame.localCount; j++) {
+                        if (currentFrame.locals[j].name == argName) {
+                            new_frame.argv[new_frame.argc].value = currentFrame.locals[j].value;
+                            isVar = true;
+                            break;
+                        }
+                    }
+                }
+                if (!isVar) {
+                    new_frame.argv[new_frame.argc].value = stoi(argName);
+                }
+
+                new_frame.argc++;
+            }
+
+            call_stack.push(new_frame);
+
+
+            int64_t targetOffset = curr_pos - 12 - line.length();
+            fseek(f, targetOffset, SEEK_SET);
+        }
+        else if (instructions == "func") {
+            for (int i = 2; i < token_count; i++) {
+                currentFrame.argv[i - 2].name = tokens[i].text;
+            }
+        }
+        else if (instructions == "func_end") {
+
+            int64_t address = currentFrame.returnLine;
+
+            Frame popped = call_stack.pop();
+
+            if (!call_stack.isEmpty()) {
+
+                Frame& caller = call_stack.peek();
+
+                for (int i = 0; i < popped.argc; i++) {
+
+                    string argName = popped.argv[i].name;
+
+                    bool isFoundInCaller = false;
+                    for (int j = 0; j < caller.argc; j++) {
+                        if (caller.argv[j].name == argName) {
+                            caller.argv[j].value = popped.argv[i].value;
+                            isFoundInCaller = true;
+                            break;
+                        }
+                    }
+                    if (!isFoundInCaller) {
+                        for (int j = 0; j < caller.localCount; j++) {
+                            if (caller.locals[j].name == argName) {
+                                caller.locals[j].value = popped.argv[i].value;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (address != -1) {
+
+                fseek(f, address, SEEK_SET);
+            }
+            else {
+                break;
+            }
+        }
+
+        Snapshot* ss = buildSnapshot(call_stack);
+        timeline.record(ss);
+    }
+
+    fclose(f);
 }
 
 // PASS 0x3: SERIALIZE TIMELINE
