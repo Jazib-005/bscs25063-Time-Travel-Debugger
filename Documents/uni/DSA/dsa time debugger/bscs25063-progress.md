@@ -8,4 +8,8 @@ Next target is to implement pass 0x1
 Implemented Pass 0x1
 Next Taget is to implemnt Pass Ox2
 Implemented Pass 0x2 tokenizeline and buildSnapshot functions
-Implented Pass 0x2 Execute Program
+Implemented Pass 0x2 Execute // Program forgot to push :(
+Implemented Pass 0x3 
+
+10/11/2026
+Implemented the queue structure and moved the function used to helper.cpp and made checksum function
