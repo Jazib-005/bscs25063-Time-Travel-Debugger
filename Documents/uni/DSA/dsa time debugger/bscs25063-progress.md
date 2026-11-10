@@ -13,3 +13,6 @@ Implemented Pass 0x3
 
 10/11/2026
 Implemented the queue structure and moved the function used to helper.cpp and made checksum function
+
+10/11/2026
+Implemented and completed all the functions and load balancer cpp. As  i have not downloaded the linux did all the work in away that it can be compiled in linux aswell.Pushed the cpp all together 
