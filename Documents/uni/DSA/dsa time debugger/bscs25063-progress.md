@@ -16,3 +16,6 @@ Implemented the queue structure and moved the function used to helper.cpp and ma
 
 10/11/2026
 Implemented and completed all the functions and load balancer cpp. As  i have not downloaded the linux did all the work in away that it can be compiled in linux aswell.Pushed the cpp all together 
+
+11/11/2026
+Implemeneted recAll ,sendAll and upload Source and moved all the structs repeatedly used to helper.cpp
