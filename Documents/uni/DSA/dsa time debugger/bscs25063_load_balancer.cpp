@@ -24,6 +24,7 @@
 //   - it sends its reply as [status: 1 byte][payload], then closes the connection 
 #include <iostream>
 #include <string>
+#include <cstring>
 #include <stdexcept>
 #include <cstdlib>
 #include <thread>
@@ -56,14 +57,18 @@ using namespace std;
 
 
 // ---- Constants ----
+#ifdef _WIN32
+const char* SERVER_PATH = "server.exe";
+#else
 const char* SERVER_PATH = "./server";      // the program we start when the server is down
+#endif
 const int IO_BUFFER_SIZE = 64 * 1024;      // fixed buffer for moving bytes
 const int LISTEN_BACKLOG = 16;             // connections the OS holds until accept() takes them
 const int MAX_PENDING_CLIENTS = 8;         // clients allowed to wait in our queue. More than this get "server busy".
 const int STARTUP_MAX_ATTEMPTS = 50;       // after starting the server, how many times we try to connect
 const int STARTUP_POLL_INTERVAL_MS = 100;  // wait between those tries (50 x 100 ms = 5 seconds in total)
 int lbPort = 5000;
-string serverHost = "127.0.0.0";
+string serverHost = "127.0.0.1";
 int serverPort = 5001;
 
 
@@ -94,11 +99,12 @@ public:
             delete front;
             front = temp;
         }
-
     }
     void enqueue(const T& val)
     {
-        Node* new_node = new Node(val);
+        Node* new_node = new Node;
+        new_node->data = val;
+        new_node->next = nullptr;
         if (isEmpty()) {
             front = rear = new_node;
             count++;
@@ -108,7 +114,6 @@ public:
         rear = new_node;
         count++;
         return;
-
     }
     T dequeue()
     {
@@ -124,7 +129,6 @@ public:
         delete temp;
         count--;
         return value;
-
     }
     bool isEmpty()
     {
@@ -132,12 +136,10 @@ public:
             return true;
         }
         return false;
-
     }
     int size()
     {
         return count;
-
     }
 };
 
@@ -170,9 +172,6 @@ bool sendAll(int sock, const char* buf, size_t n)
         total_sent += sent;
     }
     return true;
-
-
-
 }
 bool sendError(int sock, const string& message)
 {
@@ -188,9 +187,6 @@ bool sendError(int sock, const string& message)
     if (!sendAll(sock, (const char*)&checksum, sizeof(checksum))) return false;
 
     return true;
-
-
-
 }
 int createListenSocket(int port)
 {
@@ -214,7 +210,6 @@ int createListenSocket(int port)
 #else
         close(Socket);
 #endif
-
         exit(1);
     }
     struct sockaddr_in addr;
@@ -228,7 +223,7 @@ int createListenSocket(int port)
 #ifdef _WIN32
         closesocket(Socket);
 #else
-        close(sock);
+        close(Socket);
 #endif
         exit(1);
     }
@@ -238,13 +233,12 @@ int createListenSocket(int port)
 #ifdef _WIN32
         closesocket(Socket);
 #else
-        close(sock);
+        close(Socket);
 #endif
         exit(1);
     }
 
     return Socket;
-
 }
 int connectToServer(const char* host, int port)
 {
@@ -261,38 +255,38 @@ int connectToServer(const char* host, int port)
 #ifdef _WIN32
         closesocket(Socket);
 #else
-        close(sock);
+        close(Socket);
 #endif
-        exit(1);
+        return -1;
     }
 
     if (connect(Socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
 #ifdef _WIN32
         closesocket(Socket);
 #else
-        close(sock);
+        close(Socket);
 #endif
         return -1;
     }
     return Socket;
-
-
-
 }
 
 // =============================================================================================
 // PART 1: WAKING UP THE SERVER IF IT IS DOWN
 // =============================================================================================
 
-
 bool startServer(int port)
 {
-    // Build the command text: SERVER_PATH + " " + port as text + "&"
-    //   Example: "./server 5001 &"
+    // Build the command text: SERVER_PATH + " " + port as text + background flag
     // Call system() with it.
     // Return true if system() returned 0, otherwise false.
 
+#ifdef _WIN32
+    string command_text = "start /b server.exe " + to_string(port);
+#else
     string command_text = string(SERVER_PATH) + " " + to_string(port) + " &";
+#endif
+
     int system_result = system(command_text.c_str());
 
     if (system_result == 0) {
@@ -301,7 +295,6 @@ bool startServer(int port)
     else {
         return false;
     }
-
 }
 int connectToServerWithWakeup()
 {
@@ -333,15 +326,11 @@ int connectToServerWithWakeup()
     }
 
     return -1;
-
-
 }
-
 
 // =============================================================================================
 // PART 2: PASSING THE STRING AND THE REPLY (one client, called by the main thread only)
 // =============================================================================================
-
 
 void relayOneClient(ClientInfo& c)
 {
@@ -364,7 +353,6 @@ void relayOneClient(ClientInfo& c)
         return;
     }
 
-
     int serverSock = connectToServerWithWakeup();
     if (serverSock < 0) {
         sendError(c.sock, "backend server failed to start");
@@ -376,21 +364,63 @@ void relayOneClient(ClientInfo& c)
         return;
     }
 
-
     char buffer[IO_BUFFER_SIZE];
     int bytesRead = 0;
 
+    vector<char> uploadWindow;
+    int32_t uploadChecksum = 0;
+    bool uploadSuccess = false;
+
     while ((bytesRead = recv(c.sock, buffer, sizeof(buffer), 0)) > 0) {
-        if (!sendAll(serverSock, buffer, bytesRead)) {
-            break;
+        uploadWindow.insert(uploadWindow.end(), buffer, buffer + bytesRead);
+
+        if (uploadWindow.size() > 4) {
+            int toSend = uploadWindow.size() - 4;
+            uploadChecksum = calculateChecksum(uploadChecksum, uploadWindow.data(), toSend);
+            if (!sendAll(serverSock, uploadWindow.data(), toSend)) {
+                break;
+            }
+            uploadWindow.erase(uploadWindow.begin(), uploadWindow.begin() + toSend);
         }
     }
 
-    shutdown(serverSock, SHUT_WR);
+    if (uploadWindow.size() == 4) {
+        int32_t receivedCheck = 0;
+        memcpy(&receivedCheck, uploadWindow.data(), 4);
+        if (uploadChecksum == receivedCheck) {
+            sendAll(serverSock, uploadWindow.data(), 4);
+            uploadSuccess = true;
+        }
+    }
 
-    while ((bytesRead = recv(serverSock, buffer, sizeof(buffer), 0)) > 0) {
-        if (!sendAll(c.sock, buffer, bytesRead)) {
-            break;
+    if (!uploadSuccess) {
+        sendError(c.sock, "upload checksum mismatch");
+    }
+    else {
+        shutdown(serverSock, SHUT_WR);
+
+        vector<char> downloadWindow;
+        int32_t downloadChecksum = 0;
+
+        while ((bytesRead = recv(serverSock, buffer, sizeof(buffer), 0)) > 0) {
+            downloadWindow.insert(downloadWindow.end(), buffer, buffer + bytesRead);
+
+            if (downloadWindow.size() > 4) {
+                int toSend = downloadWindow.size() - 4;
+                downloadChecksum = calculateChecksum(downloadChecksum, downloadWindow.data(), toSend);
+                if (!sendAll(c.sock, downloadWindow.data(), toSend)) {
+                    break;
+                }
+                downloadWindow.erase(downloadWindow.begin(), downloadWindow.begin() + toSend);
+            }
+        }
+
+        if (downloadWindow.size() == 4) {
+            int32_t receivedCheck2 = 0;
+            memcpy(&receivedCheck2, downloadWindow.data(), 4);
+            if (downloadChecksum == receivedCheck2) {
+                sendAll(c.sock, downloadWindow.data(), 4);
+            }
         }
     }
 
@@ -403,11 +433,9 @@ void relayOneClient(ClientInfo& c)
 #endif
 }
 
-
 // =============================================================================================
 // PART 3: THE TWO THREADS
 // =============================================================================================
-
 
 void acceptLoop(int listenSock)
 {
@@ -485,7 +513,6 @@ void dispatcherLoop()
 #endif
         }
     }
-
 }
 
 void handler(int sg) {
@@ -521,7 +548,6 @@ int main(int argc, char* argv[])
 #else
     close(listenSock);
 #endif
-
 
     return 0;
 }

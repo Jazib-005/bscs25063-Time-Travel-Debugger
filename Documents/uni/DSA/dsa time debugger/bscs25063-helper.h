@@ -3,55 +3,45 @@
 #include <cstdint>
 #include <vector>
 
-// Helper.h should contain the structs, functions, constants, etc. that are used more than one time in the project. For example, the structs that are used in both server and client, the constants that are used in all three files. 
-
-// Constants
+// Constants used across the project
 const int32_t MAX_VARS_PER_FRAME = 16;
 const int32_t MAX_STACK_DEPTH = 64;
 
-
-
-
 struct FuncEntry
 {
-    string funcName;
+    std::string funcName;
     int64_t byteOffsetInResolveBin; // where this function's FUNC header record sits
 };
+
 struct PendingPatch
 {
     int64_t byteOffsetOfOffsetField; // where in resolve.bin to seek back and overwrite
-    string targetFuncName;
-};
-
-
-struct FuncEntry
-{
-    string funcName;
-    int64_t byteOffsetInResolveBin; // where this function's FUNC header record sits
+    std::string targetFuncName;
 };
 
 struct Variable
 {
-    string name;
+    std::string name;
     int32_t value;
 };
 
 struct Frame
-
 {
-
-    string func_name;
+    std::string func_name;
     int32_t argc;
     Variable argv[MAX_VARS_PER_FRAME];
     int32_t returnLine;
     Variable locals[MAX_VARS_PER_FRAME];
     int32_t localCount;
 };
+
 struct Snapshot
 {
     Frame callStack[MAX_STACK_DEPTH];
     int32_t stackDepth;
 };
+
+#pragma pack(push, 1)
 struct TTDBHeader
 {
     char magic[4];
@@ -59,8 +49,9 @@ struct TTDBHeader
     int32_t stepCount;
     int64_t indexOffset;
 };
+#pragma pack(pop)
 
-int32_t calculateChecksum(int32_t currentSum, const char* buf, int32_t len)
+inline int32_t calculateChecksum(int32_t currentSum, const char* buf, int32_t len)
 {
     int32_t sum = currentSum;
     for (int32_t i = 0; i < len; i++) {
@@ -69,5 +60,3 @@ int32_t calculateChecksum(int32_t currentSum, const char* buf, int32_t len)
     }
     return sum;
 }
-
-
