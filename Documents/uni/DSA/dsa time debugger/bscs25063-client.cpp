@@ -12,16 +12,36 @@
 //   start -> cmdStart()  -> requestDebugFile() (Part A) -> openTdbg() (Part B) -> shows step 1
 //   next, prv, jmp -> moveBy() (Part D) -> readSnapshotAt() (Part B) -> printSnapshot() (Part E)
 
+#define _CRT_SECURE_NO_WARNINGS
 #include <iostream>
 #include <string>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <unistd.h>
 #include <signal.h>
 #include <vector>
+#include <fstream>
+#include <sstream>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+#ifndef SHUT_WR
+#define SHUT_WR SD_SEND
+#endif
+#else
+#include <unistd.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#endif
+
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
 #include "helper.h"
 using namespace std;
 
@@ -40,33 +60,6 @@ const int MAX_VARS_PER_FRAME = 16;
 const int MAX_STACK_DEPTH = 64;
 
 
-// ---- Structs (same as Phase 1, so the file can be read back exactly as it was written) ----
-struct Variable
-{
-    string name;
-    int32_t value;
-};
-struct Frame
-{
-    string func_name;
-    int32_t argc;
-    Variable argv[MAX_VARS_PER_FRAME];
-    int32_t returnLine;
-    Variable locals[MAX_VARS_PER_FRAME];
-    int32_t localCount;
-};
-struct Snapshot
-{
-    Frame callStack[MAX_STACK_DEPTH];
-    int32_t stackDepth;
-};
-struct TTDBHeader 
-{
-    char magic[4]; // "TTDB"
-    int32_t version;
-    int32_t stepCount;
-    int64_t indexOffset;
-};
 
 // ---- Structs only the client needs ----
 struct TdbgReader
@@ -90,23 +83,102 @@ bool recvAll(int sock, char *buf, size_t n)
 {
     // recv() can return fewer bytes than asked for, so keep calling it until exactly n bytes are read.
     // Return false if the connection closes or fails before n bytes arrive.
+    size_t total_received = 0;
+    while (total_received < n) {
+        int received = recv(sock, buf + total_received, (int)(n - total_received), 0);
+        if (received <= 0) {
+            return false;
+        }
+        total_received += received;
+    }
+    return true;
 }
 bool sendAll(int sock, const char *buf, size_t n)
 {
     // send() can send fewer bytes than asked for, so keep calling it until all n bytes are sent.
     // Use the flag MSG_NOSIGNAL. Return false if the connection fails.
+    size_t total_sent = 0;
+    while (total_sent < n) {
+        int sent = send(sock, buf + total_sent, (int)(n - total_sent), MSG_NOSIGNAL);
+        if (sent <= 0) {
+            return false;
+        }
+        total_sent += sent;
+    }
+    return true;
 }
 
 int connectToHost(const char *host, int port)
 {
     // Create a TCP socket and connect it to host:port.
     // Return the socket, or -1 if the connection fails.
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        return -1;
+    }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+
+    if (inet_pton(AF_INET, host, &addr.sin_addr) <= 0) {
+#ifdef _WIN32
+        closesocket(sock);
+#else
+        close(sock);
+#endif
+        return -1;
+    }
+
+    if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+#ifdef _WIN32
+        closesocket(sock);
+#else
+        close(sock);
+#endif
+        return -1;
+    }
+
+    return sock;
 }
 bool uploadSource(int sock, const char *sourcePath)
 {
     // have to do checksum and then send
     // When the file is finished, call shutdown(sock, SHUT_WR). This is how the server knows the string is complete.
     // Return false if the file cannot be opened or any send fails.
+
+    FILE* fp = fopen(sourcePath, "rb");
+    if (!fp) {
+        return false;
+    }
+
+    char status = 0;
+    int32_t checksum = calculateChecksum(0, &status, 1);
+    if (!sendAll(sock, &status, 1)) {
+        fclose(fp);
+        return false;
+    }
+
+    char buffer[IO_BUFFER_SIZE];
+    size_t bytesRead;
+    while ((bytesRead = fread(buffer, 1, sizeof(buffer), fp)) > 0) {
+        checksum = calculateChecksum(checksum, buffer, (int32_t)bytesRead);
+        if (!sendAll(sock, buffer, bytesRead)) {
+            fclose(fp);
+            return false;
+        }
+    }
+    fclose(fp);
+
+    if (!sendAll(sock, (const char*)&checksum, sizeof(checksum))) {
+        return false;
+    }
+
+    shutdown(sock, SHUT_WR);
+    return true;
+
+
 }
 bool receiveResponse(int sock, const char *outTdbgPath, string &outError)
 {
@@ -115,6 +187,52 @@ bool receiveResponse(int sock, const char *outTdbgPath, string &outError)
     // Status 1: collect the payload into outError. Status 0: write the payload to the file.
     // At the end call verify(). If it fails, delete the file, set outError to
     // "checksum mismatch, response corrupted" and return false.
+
+    char status;
+    if (!recvAll(sock, &status, 1)) {
+        return false;
+    }
+
+    string networkData;
+    char buffer[IO_BUFFER_SIZE];
+    int bytesGrabbed;
+
+    while ((bytesGrabbed = recv(sock, buffer, sizeof(buffer), 0)) > 0) {
+        networkData.append(buffer, bytesGrabbed);
+    }
+
+    if (networkData.length() < 4) {
+        outError = "Error: Response too short, missing checksum";
+        return false;
+    }
+
+    string payloadData = networkData.substr(0, networkData.length() - 4);
+
+    int32_t receivedCheck;
+    memcpy(&receivedCheck, networkData.data() + networkData.length() - 4, 4);
+
+    int32_t myCheck = calculateChecksum(0, &status, 1);
+    myCheck = calculateChecksum(myCheck, payloadData.c_str(), (int32_t)payloadData.length());
+
+    if (myCheck != receivedCheck) {
+        outError = "Error: CheckSUm mismatch";
+        return false;
+    }
+
+    if (status == 1) {
+        outError = payloadData;
+        return false;
+    }
+
+    FILE* fp = fopen(outTdbgPath, "wb");
+    if (!fp) {
+        outError = "Error: File not found";
+        return false;
+    }
+
+    fwrite(payloadData.c_str(), 1, payloadData.length(), fp);
+    fclose(fp);
+    return true;
 }
 
 // =============================================================================================
@@ -126,13 +244,86 @@ bool receiveResponse(int sock, const char *outTdbgPath, string &outError)
 
 bool openTdbg(const char *path, TdbgReader &r)
 {
+    FILE* fp = fopen(path, "rb");
+    if (!fp) return false;
+
+    if (fread(&r.header, 1, sizeof(TTDBHeader), fp) != sizeof(TTDBHeader)) {
+        fclose(fp);
+        return false;
+    }
+
+    if (strncmp(r.header.magic, "TTDB", 4) != 0 || r.header.stepCount <= 0) {
+        fclose(fp);
+        return false;
+    }
+
+    r.index.resize(r.header.stepCount);
+    if (fseek(fp, r.header.indexOffset, SEEK_SET) != 0 ||
+        fread(r.index.data(), sizeof(int64_t), r.header.stepCount, fp) != (size_t)r.header.stepCount) {
+        fclose(fp);
+        return false;
+    }
+
+    r.file_index = (size_t)fp;
+    return true;
 }
 void closeTdbg(TdbgReader &r)
 {
     // Free r.index and close the file.
+    r.index.clear();
+    if (r.file_index != 0) {
+        FILE* fp = (FILE*)r.file_index;
+        fclose(fp);
+        r.file_index = 0;
+    }
 }
 Snapshot *readSnapshotAt(TdbgReader &r, int32_t step)
 {
+    if (step < 0 || step >= r.header.stepCount || r.file_index == 0) {
+        return nullptr;
+    }
+
+    FILE* fp = (FILE*)r.file_index;
+
+    fseek(fp, r.index[step], SEEK_SET);
+
+    Snapshot* s = new Snapshot;
+
+    if (fread(&s->stackDepth, sizeof(int32_t), 1, fp) != 1) {
+        delete s;
+        return nullptr;
+    }
+
+    for (int i = 0; i < s->stackDepth; i++) {
+        int32_t strLen;
+
+        fread(&strLen, sizeof(int32_t), 1, fp);
+
+        s->callStack[i].func_name.resize(strLen);
+        fread(&s->callStack[i].func_name[0], sizeof(char), strLen, fp);
+
+        fread(&s->callStack[i].argc, sizeof(int32_t), 1, fp);
+
+        for (int j = 0; j < s->callStack[i].argc; j++) {
+            fread(&strLen, sizeof(int32_t), 1, fp);
+
+            s->callStack[i].argv[j].name.resize(strLen);
+            fread(&s->callStack[i].argv[j].name[0], sizeof(char), strLen, fp);
+            fread(&s->callStack[i].argv[j].value, sizeof(int32_t), 1, fp);
+        }
+
+        fread(&s->callStack[i].returnLine, sizeof(int64_t), 1, fp);
+
+        fread(&s->callStack[i].localCount, sizeof(int32_t), 1, fp);
+
+        for (int j = 0; j < s->callStack[i].localCount; j++) {
+            fread(&strLen, sizeof(int32_t), 1, fp);
+            s->callStack[i].locals[j].name.resize(strLen);
+            fread(&s->callStack[i].locals[j].name[0], sizeof(char), strLen, fp);
+            fread(&s->callStack[i].locals[j].value, sizeof(int32_t), 1, fp);
+        }
+    }
+    return s;
 }
 
 // =============================================================================================
